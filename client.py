@@ -60,6 +60,13 @@ def main():
         msg = input("> ")
 
         if msg == "/quit":
+            try:
+                sock.send(json.dumps({
+                    "type": "command",
+                    "cmd": "quit"
+                }).encode())
+            except:
+                pass
             break
 
         elif msg == "/users":
@@ -78,4 +85,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()  

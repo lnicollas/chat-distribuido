@@ -100,27 +100,37 @@ def handle_client(conn, addr, offset):
                 }, sender=addr)
 
             elif msg_type == "command":
-                handle_command(data, conn, addr)
+                should_quit = handle_command(data, conn, addr)
+                if should_quit:
+                    break
 
     except:
         pass
     finally:
+        name = None
+        # Remove o cliente do dicionário com lock
         with clients_lock:
             if addr in clients:
                 name = clients[addr]["name"]
                 del clients[addr]
 
-                broadcast({
-                    "type": "system",
-                    "msg": f"{name} saiu"
-                })
+        # Faz o broadcast fora do lock para evitar deadlock
+        if name:
+            broadcast({
+                "type": "system",
+                "msg": f"{name} saiu do chat"
+            })
 
         conn.close()
 
 
 # ---------------- COMMANDS ----------------
 def handle_command(data, conn, addr):
+    """Processa comandos do cliente. Retorna True se o comando foi quit."""
     cmd = data.get("cmd")
+
+    if cmd == "quit":
+        return True
 
     with clients_lock:
         if cmd == "users":
@@ -129,6 +139,8 @@ def handle_command(data, conn, addr):
                 "type": "users",
                 "users": users
             }).encode())
+
+    return False
 
 
 # ---------------- SERVER ----------------
