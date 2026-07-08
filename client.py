@@ -63,6 +63,7 @@ class ChatClient:
         self.port = TCP_PORT
         self.sock = None
         self.connected = False
+        self.reconnecting = False
         self.running = False
         self.users = []
         self.messages = []
@@ -194,9 +195,9 @@ class ChatClient:
         tk.Label(header, text=f"💬 Chat - {self.name}", font=(self.font_family, 12, "bold"),
                  bg="#ffffff").pack(side="left")
 
-        status = tk.Label(header, text="🟢 Conectado", font=(self.font_family, 9),
-                          fg="#28a745", bg="#ffffff")
-        status.pack(side="right")
+        self.chat_status_label = tk.Label(header, text="🟢 Conectado", font=(self.font_family, 9),
+                                          fg="#28a745", bg="#ffffff")
+        self.chat_status_label.pack(side="right")
 
         # Área de mensagens (com scroll)
         self.text_area = scrolledtext.ScrolledText(chat_frame, wrap="word", font=(self.font_family, 11),
@@ -213,10 +214,10 @@ class ChatClient:
         self.entry_msg.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.entry_msg.bind("<Return>", lambda e: self.send_message())
 
-        send_btn = tk.Button(input_frame, text="Enviar", font=(self.font_family, 10, "bold"),
-                             bg=self.primary_color, fg="white", relief="flat", padx=15,
-                             command=self.send_message)
-        send_btn.pack(side="right")
+        self.send_btn = tk.Button(input_frame, text="Enviar", font=(self.font_family, 10, "bold"),
+                                  bg=self.primary_color, fg="white", relief="flat", padx=15,
+                                  command=self.send_message)
+        self.send_btn.pack(side="right")
 
         # Botão desconectar
         disconnect_btn = tk.Button(chat_frame, text="🚪 Desconectar", font=(self.font_family, 9),
@@ -226,6 +227,9 @@ class ChatClient:
 
         # Inicia thread de recebimento
         self.start_receiver()
+
+        # Solicita lista de usuários inicial
+        self.send_command("users")
 
         # Atualiza a lista de usuários periodicamente
         self.update_users()
@@ -319,8 +323,8 @@ class ChatClient:
             })
             self.refresh_messages()
         except Exception as e:
-            messagebox.showerror("Erro", f"Falha ao enviar mensagem: {e}")
-            self.do_disconnect()
+            self.display_system_message(f"Erro ao enviar mensagem: {e}")
+            self.handle_connection_loss()
 
     def send_command(self, cmd):
         """Envia um comando ao servidor."""
@@ -336,6 +340,7 @@ class ChatClient:
         """Desconecta e volta para o login."""
         self.running = False
         self.connected = False
+        self.reconnecting = False
         if self.sock:
             try:
                 self.sock.close()
@@ -384,8 +389,60 @@ class ChatClient:
             except Exception:
                 continue
 
-        # Se saiu do loop, desconecta
-        self.queue.put({"type": "_disconnect"})
+        # Se saiu do loop involuntariamente, trata a perda de conexão
+        if self.running and self.connected:
+            self.handle_connection_loss()
+        else:
+            self.queue.put({"type": "_disconnect"})
+
+    def handle_connection_loss(self):
+        """Trata a perda de conexão, iniciando o processo de reconexão."""
+        if not self.reconnecting and self.connected:
+            self.connected = False
+            self.reconnecting = True
+            if self.sock:
+                try:
+                    self.sock.close()
+                except:
+                    pass
+            self.queue.put({"type": "_lost_connection"})
+
+    def start_reconnect_thread(self):
+        """Inicia a thread de reconexão."""
+        thread = threading.Thread(target=self.reconnect_loop, daemon=True)
+        thread.start()
+
+    def reconnect_loop(self):
+        """Tenta reconectar ao servidor de forma assíncrona."""
+        time.sleep(1.0)  # Pequeno delay antes da primeira tentativa
+        
+        while self.running and self.reconnecting and not self.connected:
+            host = self.host
+            port = self.port
+            
+            if self.discovery_var.get():
+                try:
+                    disc_host, disc_port = discover()
+                    if disc_host:
+                        host = disc_host
+                        port = disc_port
+                except Exception:
+                    pass
+            
+            if host:
+                try:
+                    sock = connect_to_server(host, port, self.name)
+                    self.sock = sock
+                    self.host = host
+                    self.port = port
+                    self.connected = True
+                    self.reconnecting = False
+                    self.queue.put({"type": "_reconnected"})
+                    return
+                except Exception:
+                    pass
+            
+            time.sleep(2.0)
 
     def process_queue(self):
         """Processa eventos da fila na thread principal."""
@@ -395,13 +452,41 @@ class ChatClient:
                 if data.get("type") == "_disconnect":
                     self.do_disconnect()
                     return
-                self.handle_server_data(data)
+                elif data.get("type") == "_lost_connection":
+                    self.handle_lost_connection_ui()
+                elif data.get("type") == "_reconnected":
+                    self.handle_reconnected_ui()
+                else:
+                    self.handle_server_data(data)
         except queue.Empty:
             pass
         finally:
             # Agenda nova verificação
-            if self.connected:
+            if self.connected or self.reconnecting:
                 self.root.after(100, self.process_queue)
+
+    def handle_lost_connection_ui(self):
+        """Atualiza a UI para refletir a perda de conexão e inicia a reconexão."""
+        if hasattr(self, "chat_status_label"):
+            self.chat_status_label.config(text="⚠️ Conectando...", fg="#ffc107")
+        if hasattr(self, "entry_msg"):
+            self.entry_msg.config(state="disabled")
+        if hasattr(self, "send_btn"):
+            self.send_btn.config(state="disabled")
+        self.display_system_message("Conexão perdida. Tentando reconectar...")
+        self.start_reconnect_thread()
+
+    def handle_reconnected_ui(self):
+        """Atualiza a UI para refletir a reconexão com sucesso."""
+        if hasattr(self, "chat_status_label"):
+            self.chat_status_label.config(text="🟢 Conectado", fg="#28a745")
+        if hasattr(self, "entry_msg"):
+            self.entry_msg.config(state="normal")
+        if hasattr(self, "send_btn"):
+            self.send_btn.config(state="normal")
+        self.display_system_message("Reconectado ao servidor com sucesso!")
+        self.start_receiver()
+        self.send_command("users")
 
     def handle_server_data(self, data):
         """Processa dados recebidos do servidor."""
