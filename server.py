@@ -108,13 +108,14 @@ def handle_client(conn, addr, offset):
         pass
     finally:
         name = None
-        # Remove o cliente do dicionário com lock
+        
+        
         with clients_lock:
             if addr in clients:
                 name = clients[addr]["name"]
                 del clients[addr]
 
-        # Faz o broadcast fora do lock para evitar deadlock
+       
         if name:
             broadcast({
                 "type": "system",
@@ -174,6 +175,7 @@ def start_tcp_server(offset):
             break
 
 
+
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     print("=== CHAT DISTRIBUÍDO ===")
@@ -187,4 +189,8 @@ if __name__ == "__main__":
     )
     udp.start()
 
-    start_tcp_server(offset)
+    start_tcp_server(offset)    
+
+
+
+

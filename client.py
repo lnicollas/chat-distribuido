@@ -1,14 +1,19 @@
 import socket
 import threading
 import json
+import time
 
 UDP_PORT = 65433
 
 
-def recv(sock):
-    while True:
+def recv(state):
+    while state["running"]:
         try:
-            data = json.loads(sock.recv(1024).decode())
+            raw = state["sock"].recv(1024)
+            if not raw:
+                raise ConnectionError()
+            
+            data = json.loads(raw.decode())
 
             if data["type"] == "message":
                 print(f"\n[{data['time']}] {data['from']}: {data['text']}")
@@ -21,14 +26,50 @@ def recv(sock):
 
             print("> ", end="")
 
-        except:
-            break
+        except Exception:
+            if not state["running"]:
+                break
+            
+            print("\n[SYSTEM] Conexão perdida com o servidor. Tentando reconectar...")
+            
+            try:
+                state["sock"].close()
+            except:
+                pass
+            
+            reconnected = False
+            while state["running"]:
+                host, port = discover()
+                if host:
+                    try:
+                        new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        new_sock.connect((host, port))
+                        new_sock.send(json.dumps({
+                            "name": state["name"]
+                        }).encode())
+                        state["sock"] = new_sock
+                        reconnected = True
+                        break
+                    except Exception:
+                        pass
+                time.sleep(2)
+            
+            if reconnected:
+                print("[SYSTEM] Reconectado com sucesso ao servidor!")
+                print("> ", end="")
+            else:
+                if not state["running"]:
+                    break
+                print("[SYSTEM] Não foi possível reconectar. Saindo...")
+                state["running"] = False
+                break
 
 
 def discover():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("", UDP_PORT))
-    sock.settimeout(10)
+    sock.settimeout(5)
 
     try:
         data, addr = sock.recvfrom(2048)
@@ -46,22 +87,45 @@ def main():
         port = 65432
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((host, port))
+    try:
+        sock.connect((host, port))
+    except Exception as e:
+        print(f"Não foi possível conectar ao servidor: {e}")
+        return
 
     name = input("nome: ")
 
-    sock.send(json.dumps({
-        "name": name
-    }).encode())
+    try:
+        sock.send(json.dumps({
+            "name": name
+        }).encode())
+    except:
+        print("Erro de comunicação inicial.")
+        return
 
-    threading.Thread(target=recv, args=(sock,), daemon=True).start()
+    state = {
+        "sock": sock,
+        "name": name,
+        "running": True,
+        "host": host,
+        "port": port
+    }
 
-    while True:
-        msg = input("> ")
+    threading.Thread(target=recv, args=(state,), daemon=True).start()
+
+    while state["running"]:
+        try:
+            msg = input("> ")
+        except (KeyboardInterrupt, EOFError):
+            break
+
+        if not state["running"]:
+            break
 
         if msg == "/quit":
+            state["running"] = False
             try:
-                sock.send(json.dumps({
+                state["sock"].send(json.dumps({
                     "type": "command",
                     "cmd": "quit"
                 }).encode())
@@ -70,19 +134,28 @@ def main():
             break
 
         elif msg == "/users":
-            sock.send(json.dumps({
-                "type": "command",
-                "cmd": "users"
-            }).encode())
+            try:
+                state["sock"].send(json.dumps({
+                    "type": "command",
+                    "cmd": "users"
+                }).encode())
+            except:
+                print("\n[SYSTEM] Não foi possível enviar o comando. Tentando reconectar...")
 
         else:
-            sock.send(json.dumps({
-                "type": "message",
-                "text": msg
-            }).encode())
+            try:
+                state["sock"].send(json.dumps({
+                    "type": "message",
+                    "text": msg
+                }).encode())
+            except:
+                print("\n[SYSTEM] Não foi possível enviar a mensagem. Tentando reconectar...")
 
-    sock.close()
+    try:
+        state["sock"].close()
+    except:
+        pass
 
 
 if __name__ == "__main__":
-    main()  
+    main()     
